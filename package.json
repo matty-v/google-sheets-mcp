@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "deploy": "gcloud functions deploy google-sheets-mcp --gen2 --runtime=nodejs20 --trigger-http --allow-unauthenticated --entry-point=mcpHandler --source=."
+    "deploy": "gcloud functions deploy google-sheets-mcp --gen2 --runtime=nodejs20 --trigger-http --allow-unauthenticated --entry-point=mcpHandler --source=. --region=us-central1"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
