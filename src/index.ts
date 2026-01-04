@@ -1,15 +1,22 @@
 import { http } from '@google-cloud/functions-framework';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpServer } from './server.js';
 
-// Store active transports by session ID
-const transports = new Map<string, SSEServerTransport>();
+// Create a single transport instance for stateless mode
+const transport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: undefined, // Stateless mode
+});
+
+// Create and connect the MCP server
+const server = createMcpServer();
+server.connect(transport);
 
 http('mcpHandler', async (req, res) => {
   // Enable CORS
   res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, HEAD, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id');
+  res.set('Access-Control-Expose-Headers', 'Mcp-Session-Id');
 
   if (req.method === 'OPTIONS') {
     res.status(204).send('');
@@ -24,55 +31,34 @@ http('mcpHandler', async (req, res) => {
     return;
   }
 
-  // SSE endpoint - establishes connection
-  if (path === '/sse' && req.method === 'GET') {
-    const server = createMcpServer();
-    const transport = new SSEServerTransport('/message', res);
-
-    // Store transport for message routing
-    const sessionId = transport.sessionId;
-    transports.set(sessionId, transport);
-
-    // Clean up on disconnect
-    res.on('close', () => {
-      transports.delete(sessionId);
-    });
-
-    await server.connect(transport);
+  // MCP protocol version discovery (HEAD request to root)
+  if (path === '/' && req.method === 'HEAD') {
+    res.set('MCP-Protocol-Version', '2025-06-18');
+    res.status(200).send('');
     return;
   }
 
-  // Message endpoint - receives client messages
-  if (path === '/message' && req.method === 'POST') {
-    const sessionId = req.query.sessionId as string;
-
-    if (!sessionId) {
-      res.status(400).json({ error: 'Missing sessionId query parameter' });
+  // Handle MCP requests at root path (Streamable HTTP transport)
+  if (path === '/' || path === '/mcp') {
+    if (req.method === 'GET' || req.method === 'POST' || req.method === 'DELETE') {
+      try {
+        await transport.handleRequest(req, res, req.body);
+      } catch (error) {
+        console.error('Error handling MCP request:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      }
       return;
     }
-
-    const transport = transports.get(sessionId);
-    if (!transport) {
-      res.status(404).json({ error: 'Session not found' });
-      return;
-    }
-
-    try {
-      await transport.handlePostMessage(req, res);
-    } catch (error) {
-      console.error('Error handling message:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-    return;
   }
 
   // Default response
   res.status(404).json({
     error: 'Not found',
     availableEndpoints: {
+      '/': 'GET/POST - MCP Streamable HTTP endpoint',
       '/health': 'GET - Health check',
-      '/sse': 'GET - SSE connection for MCP',
-      '/message': 'POST - Message endpoint for MCP (requires sessionId query param)',
     }
   });
 });
@@ -80,9 +66,9 @@ http('mcpHandler', async (req, res) => {
 // For local development with stdio
 if (process.env.MCP_STDIO === 'true') {
   import('@modelcontextprotocol/sdk/server/stdio.js').then(({ StdioServerTransport }) => {
-    const server = createMcpServer();
-    const transport = new StdioServerTransport();
-    server.connect(transport);
+    const stdioServer = createMcpServer();
+    const stdioTransport = new StdioServerTransport();
+    stdioServer.connect(stdioTransport);
     console.error('MCP server running on stdio');
   });
 }
